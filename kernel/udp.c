@@ -46,6 +46,16 @@ int udp_socket_close(int fd) {
     return 0;
 }
 
+int udp_get_local_port(int fd) {
+    if (fd < 0 || fd >= UDP_MAX_SOCKETS) return -1;
+    spin_lock(&udp_lock);
+    if (!sockets[fd].in_use) { spin_unlock(&udp_lock); return -1; }
+    uint16_t port = sockets[fd].local_port;
+    spin_unlock(&udp_lock);
+    if (!port) port = 49152 + (uint16_t)(fd * 137 + 42);
+    return port;
+}
+
 int udp_bind(int fd, uint32_t addr, uint16_t port) {
     if (fd < 0 || fd >= UDP_MAX_SOCKETS) return -1;
     spin_lock(&udp_lock);
@@ -122,6 +132,13 @@ int udp_recv_timeout(int fd, void *buf, int len, uint32_t *src_ip, uint16_t *src
     if (!buf || len <= 0) return -1;
     spin_lock(&udp_lock);
     if (!sockets[fd].in_use) { spin_unlock(&udp_lock); return -1; }
+    /* timeout_ms == 0 means "poll once" (non-blocking): return immediately
+     * instead of entering the sleep loop, which can stall for the full
+     * timeout when no datagram ever arrives. */
+    if (sockets[fd].rx_count <= 0 && timeout_ms == 0) {
+        spin_unlock(&udp_lock);
+        return -1;
+    }
     uint64_t start = timer_get_milliseconds();
     while (sockets[fd].rx_count <= 0) {
         if (!sockets[fd].in_use) { spin_unlock(&udp_lock); return -1; }
@@ -169,9 +186,6 @@ void udp_recv_packet(uint32_t src_ip, uint32_t dst_ip, const uint8_t *data, int 
                                 data + UDP_HDR_LEN, payload_len);
         }
         if (calc != udp->checksum) {
-            kprintf("UDPCHK fail src=%08x dst=0x%08x sport=%u dport=%u len=%d stored=0x%04x calc=0x%04x pktlen=%d\n",
-                    src_ip, dst_ip, sport, dport,
-                    packet_len, udp->checksum, calc, payload_len);
             spin_lock(&udp_lock); stats.checksum_err++; stats.rx_errors++; spin_unlock(&udp_lock);
             return;
         }

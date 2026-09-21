@@ -9,6 +9,8 @@
 #include "spinlock.h"
 #include "timer.h"
 
+void net_poll(void);   /* RX pump (net.c): dispatches inbound TCP to tcp_process_packet */
+
 static tcp_socket_t sockets[TCP_MAX_SOCKETS];
 static spinlock_t tcp_lock = SPINLOCK_INIT;
 static uint32_t next_isn = 1000;
@@ -91,6 +93,7 @@ int tcp_connect(uint32_t ip, uint16_t port) {
     while ((int)(timer_get_milliseconds() - start) < TCP_TIMEOUT_MS) {
         if (s->state == TCP_ESTABLISHED) return fd;
         if (s->state == TCP_CLOSED) { s->in_use = 0; return -1; }
+        net_poll();          /* process inbound SYN-ACK regardless of netd */
         sched_sleep_ms(1);
     }
     if (s->retransmit_count < TCP_RETRIES) {
@@ -101,6 +104,7 @@ int tcp_connect(uint32_t ip, uint16_t port) {
         while ((int)(timer_get_milliseconds() - start) < TCP_TIMEOUT_MS) {
             if (s->state == TCP_ESTABLISHED) return fd;
             if (s->state == TCP_CLOSED) { s->in_use = 0; return -1; }
+            net_poll();
             sched_sleep_ms(1);
         }
     }
@@ -152,7 +156,6 @@ int tcp_send(int fd, const void *data, int len) {
     if (fd<0||fd>=TCP_MAX_SOCKETS||len<=0) return -1;
     spin_lock(&tcp_lock);
     if (sockets[fd].state != TCP_ESTABLISHED) {
-        kprintf("TCPDBG sendfail st=%d\n", sockets[fd].state);
         spin_unlock(&tcp_lock); return -1;
     }
     spin_unlock(&tcp_lock);
@@ -316,13 +319,11 @@ void tcp_process_packet(uint32_t src_ip, const void *pkt, int len) {
             continue;
         }
         if (f&TCP_RST) {
-            kprintf("TCPDBG rst st=%d sp=%d dp=%d\n", s->state, sp, dp);
             s->state=TCP_CLOSED; s->in_use=0; continue;
         }
         if (f&TCP_ACK) {
             if (s->state==TCP_SYN_RECEIVED) {
                 s->state=TCP_ESTABLISHED;
-                kprintf("TCPDBG estab accepted sp=%d dp=%d\n", sp, dp);
                 for (int j = 0; j < TCP_MAX_SOCKETS; j++) {
                     if (j != i && sockets[j].in_use && sockets[j].state == TCP_LISTEN &&
                         sockets[j].local_port == s->local_port &&

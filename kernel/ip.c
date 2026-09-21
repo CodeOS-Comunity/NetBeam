@@ -10,6 +10,7 @@
 #include "sched.h"
 #include "timer.h"
 #include "net_internal.h"
+#include "../drivers/nic.h"
 
 static uint32_t my_ip_addr;
 static uint32_t my_netmask = 0x00FFFFFF;
@@ -50,8 +51,27 @@ uint16_t ip_csum(const void *data, int len) { return ip_checksum(data, len); }
  * gateway/peers are normally pre-seeded and TCP/UDP callers have their own
  * retransmit backstop. */
 static int arp_wait(uint8_t *mac, uint32_t ip) {
-    for (int i = 0; i < 40; i++) {   /* ~0.4-2s for an ARP reply to arrive */
+    for (int i = 0; i < 60; i++) {   /* ~0.3-3s for an ARP reply to arrive */
         if (arp_resolve(ip, mac) == 0) return 0;
+        /* Poll-driven: do NOT rely on the background netd thread to drain the
+         * NIC and feed our arp.c cache.  We must consume any inbound ARP reply
+         * ourselves, otherwise (cold cache, e.g. in VirtualBox) resolution
+         * never completes even though the peer answered. */
+        {
+            uint8_t b[2048];
+            int l;
+            while ((l = nic_recv(b, sizeof(b))) > 0) {
+                if (l < (int)(sizeof(eth_frame_t) + sizeof(arp_packet_t))) continue;
+                eth_frame_t *ethf = (eth_frame_t *)b;
+                if (__builtin_bswap16(ethf->type) != ETH_P_ARP) continue;
+                arp_packet_t *ar = (arp_packet_t *)(b + sizeof(eth_frame_t));
+                if (ar->spa) {
+                    static const uint8_t zero_mac[ETH_ALEN] = {0,0,0,0,0,0};
+                    if (memcmp(ar->sha, zero_mac, ETH_ALEN) != 0)
+                        arp_update(ar->spa, ar->sha);
+                }
+            }
+        }
         sched_sleep_ms(5);
     }
     return -1;

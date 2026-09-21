@@ -14,9 +14,30 @@ app/
                        send/receive threads (portable against the CodeOS
                        syscall surface: tcp_*, udp_*, fs_*, sched_*)
 kernel/
-  ip.c / udp.c         IP + UDP stack (checksum validation, discovery beacons)
-  tcp.c / tcp.h        TCP stack (3-way handshake, ordered stream, windowing)
+  ip.c                 IP stack (checksum validation, poll-driven ARP
+                       resolution, route lookup)
+  udp.c / udp.h        UDP stack (checksum validation, discovery beacons,
+                       non-blocking poll mode, udp_get_local_port)
+  tcp.c / tcp.h        TCP stack (3-way handshake, ordered stream, windowing,
+                       net_poll-driven inbound processing)
 ```
+
+## Kernel stack notes (current in-tree behaviour)
+
+* **Poll-driven ARP.** `ip.c` does not rely on a background netd thread to
+  drain the NIC and feed the ARP cache. It consumes inbound ARP replies
+  itself (`nic_recv`), with a ~0.3–3s bounded wait for a reply to arrive, so
+  cold-cache resolution (e.g. in VirtualBox) completes even when the peer
+  answers late.
+* **Non-blocking UDP poll.** `udp_recv_timeout` with `timeout_ms == 0` means
+  "poll once": it returns immediately (`-1`) when no datagram is pending
+  instead of sleeping for the full timeout.
+* **`udp_get_local_port`.** Returns the bound local port of a UDP socket,
+  falling back to a deterministic ephemeral port (`49152 + fd*137 + 42`)
+  when the caller has not bound one.
+* **`net_poll()` in TCP paths.** The connect/accept paths call `net_poll()`
+  so inbound SYN-ACK / ACK segments are processed regardless of netd
+  scheduling.
 
 ## Protocol
 

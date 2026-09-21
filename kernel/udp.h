@@ -46,6 +46,7 @@ typedef struct {
 int  udp_init(void);
 int  udp_socket_create(void);
 int  udp_socket_close(int fd);
+int  udp_get_local_port(int fd);
 int  udp_bind(int fd, uint32_t addr, uint16_t port);
 int  udp_connect(int fd, uint32_t addr, uint16_t port);
 int  udp_send(int fd, const void *data, int len);
